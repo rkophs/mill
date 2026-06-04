@@ -143,17 +143,20 @@ object PathRef {
                 val value = (attrs.mtime, attrs.size).hashCode()
                 updateWithInt(value)
               } else if (jnio.Files.isReadable(path.toNIO)) {
-                val is =
-                  try Some(os.read.inputStream(path))
-                  catch {
-                    case _: jnio.FileSystemException =>
-                      // This is known to happen, when we try to digest a socket file.
-                      // We ignore the content of this file for now, as we would do,
-                      // when the file isn't readable.
-                      // See https://github.com/com-lihaoyi/mill/issues/1875
-                      None
-                  }
-                is.foreach(os.Internals.transfer(_, digestOut))
+                try {
+                  val is = os.read.inputStream(path)
+                  try os.Internals.transfer(is, digestOut)
+                  finally is.close()
+                } catch {
+                  case _: java.io.IOException =>
+                  // Socket files (FileSystemException, #1875) and files held under
+                  // an exclusive byte-range lock or non-sharing open handle (peer
+                  // mill, IDE indexer, antivirus, sync client; Windows LockFileEx
+                  // surfaces this as a plain IOException, not FileSystemException)
+                  // are un-hashable for this run. Skip their bytes — the resulting
+                  // sig will mismatch a clean read, so the next PathRef.apply
+                  // against this path recomputes rather than caching stale content.
+                }
               }
             } catch {
               case _: java.nio.file.NoSuchFileException =>
